@@ -9,6 +9,14 @@ import (
 	"tinygo.org/x/drivers"
 )
 
+// The version information of the embedded firmware.
+type FirmwareVersion struct {
+	IC      uint8 // Version of the IC. For PN532, the content of this byte is 0x32,
+	Ver     uint8 // Version of the firmware
+	Rev     uint8 // Revision of the firmware
+	Support uint8 // Indicates which are the functionalities supported by the firmware
+}
+
 // The I2C address which this device listens to.
 const Address = 0x24
 
@@ -195,18 +203,19 @@ func (d *Device) i2cTuning() {
 	time.Sleep(1 * time.Millisecond)
 }
 
-func (d *Device) FirmwareVersion() (uint32, error) {
+func (d *Device) FirmwareVersion() (FirmwareVersion, error) {
+	version := FirmwareVersion{}
 	buffer := make([]byte, 1)
 	buffer[0] = COMMAND_GETFIRMWAREVERSION
 	err := d.sendCommandCheckAck(buffer, 100*time.Millisecond)
 	if err != nil {
-		return 0, err
+		return version, err
 	}
 
 	buffer = make([]byte, 13)
 	err = d.readdata(buffer)
 	if err != nil {
-		return 0, err
+		return version, err
 	}
 	d.printBuffer("Firmware", buffer)
 
@@ -216,7 +225,7 @@ func (d *Device) FirmwareVersion() (uint32, error) {
 	}
 
 	if !bytes.Equal(buffer[0:len(expFirmwareVersion)], expFirmwareVersion) {
-		return 0, fmt.Errorf("Invalid response received")
+		return version, fmt.Errorf("Invalid response received")
 	}
 
 	var response uint32
@@ -227,5 +236,11 @@ func (d *Device) FirmwareVersion() (uint32, error) {
 	response |= uint32(buffer[9])
 	response <<= 8
 	response |= uint32(buffer[10])
-	return response, nil
+
+	version.IC = uint8((response >> 24) & 0xFF)
+	version.Ver = uint8((response >> 16) & 0xFF)
+	version.Rev = uint8((response >> 8) & 0xFF)
+	version.Support = uint8((response) & 0xFF)
+
+	return version, nil
 }

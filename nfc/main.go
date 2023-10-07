@@ -25,7 +25,7 @@ func main() {
 		fmt.Printf("Error: %s \n", err.Error())
 	}
 
-	fmt.Printf("PN532 firmware version: 0x%08X\n", version)
-	fmt.Printf("Found Chip PN5%02X\n", (version>>24)&0xFF)
-	fmt.Printf("Firmware version: %d.%d\n", (version>>16)&0xFF, (version>>8)&0xFF)
+	fmt.Printf("Found Chip PN5%02X\n", version.IC)
+	fmt.Printf("Firmware version: %d.%d\n", version.Ver, version.Rev)
+	fmt.Printf("Firmware Support: 0x%02X\n", version.Support)
 }
