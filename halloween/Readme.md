@@ -4,7 +4,9 @@ Right before Halloween people are carving their Pumpkins. This projects intentio
 
 ![Schematic](/doc/images/halloween.png)
 
-Watch the Jack O Lantern in action
+## Video Footage
+
+Watch the Jack O'Lantern in action on Youtube, just lick on the image below.
 
 [![Example Video](/doc/images/halloween-jack.png)](https://www.youtube.com/embed/Sz_yLomxdYA?si=bnogcEC23ATQtMl7 "Tinygo driven Halloween Jack O Lantern")
 
