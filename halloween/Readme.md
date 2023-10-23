@@ -4,7 +4,9 @@ Right before Halloween people are carving their Pumpkins. This projects intentio
 
 ![Schematic](/doc/images/halloween.png)
 
-<iframe src="https://youtube.com/shorts/Sz_yLomxdYA?si=5u-6iFyBCkFT4fbc" frameborder="0" allowfullscreen></iframe>
+Watch the Jack O Lantern in action
+
+[![Example Video](/doc/images/halloween-jack.png)](https://youtube.com/shorts/Sz_yLomxdYA?si=bnogcEC23ATQtMl7 "Tinygo driven Halloween Jack O Lantern")
 
 ## Microcontroller
 
