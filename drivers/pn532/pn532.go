@@ -1,3 +1,11 @@
+//go:build tinygo
+
+// Package pn532 provides a driver for the NXP PN532 chip
+//
+// [1] Datasheet PN532: https://www.nxp.com/docs/en/nxp/data-sheets/PN532_C1.pdf
+// [2] User Manual PN532: https://www.nxp.com/docs/en/user-guide/141520.pdf
+// Adafruit C++ Driver: https://github.com/adafruit/Adafruit-PN532
+
 package pn532
 
 import (
@@ -5,8 +13,6 @@ import (
 	"fmt"
 	"machine"
 	"time"
-
-	"tinygo.org/x/drivers"
 )
 
 // The version information of the embedded firmware.
@@ -15,6 +21,13 @@ type FirmwareVersion struct {
 	Ver     uint8 // Version of the firmware
 	Rev     uint8 // Revision of the firmware
 	Support uint8 // Indicates which are the functionalities supported by the firmware
+}
+
+func (ver *FirmwareVersion) String() string {
+	res := fmt.Sprintf("Found Chip PN5%02X\n", ver.IC)
+	res += fmt.Sprintf("Firmware version: %d.%d\n", ver.Ver, ver.Rev)
+	res += fmt.Sprintf("Firmware Support: 0x%02X\n", ver.Support)
+	return res
 }
 
 // The I2C address which this device listens to.
@@ -39,81 +52,98 @@ const (
 
 // PN532 Commands
 const (
-	COMMAND_GETFIRMWAREVERSION = 0x02
+	COMMAND_GETFIRMWAREVERSION  = 0x02
+	COMMAND_INLISTPASSIVETARGET = 0x4A // List passive targets
+	COMMAND_INDATAEXCHANGE      = 0x40 // Data exchange
 )
 
 const (
 	PN532_I2C_READY = 0x01
 )
 
+const (
+	MIFARE_ISO14443A = 0x00
+)
+
 // Device wraps an I2C connection to a PN532 device.
 type Device struct {
-	bus          drivers.I2C
-	Address      uint16
-	rst          machine.Pin
-	irq          machine.Pin
-	packetbuffer []byte
+	bus             *machine.I2C
+	Address         uint16
+	debug           bool
+	buffer          [BUFFSIZE]byte
+	txBuffer        [BUFFSIZE]byte
+	rxBuffer        [BUFFSIZE]byte
+	rdy             [1]byte
+	ackbuff         [6]byte
+	pn532ack        [6]byte // The ACK message from PN532
+	firmwareVersion [6]byte
 }
 
-// New creates a new PN532 connection. The I2C bus must already be
+// NewI2C creates a new PN532 connection. The I2C bus must already be
 // configured.
 //
 // This function only creates the Device object, it does not touch the device.
-func New(irq machine.Pin, reset machine.Pin, bus drivers.I2C) Device {
+func NewI2C(bus *machine.I2C) Device {
 	return Device{
-		bus:          bus,
-		Address:      Address,
-		irq:          irq,
-		rst:          reset,
-		packetbuffer: make([]byte, BUFFSIZE),
+		bus:     bus,
+		Address: Address,
+		debug:   false,
+		pn532ack: [...]byte{
+			0x00, 0x00, 0xFF,
+			0x00, 0xFF, 0x00,
+		},
+		firmwareVersion: [...]byte{
+			0x00, 0x00, 0xFF,
+			0x06, 0xFA, 0xD5,
+		},
 	}
 }
 
-func (d *Device) Configure() {
-	d.rst.Configure(machine.PinConfig{
-		Mode: machine.PinOutput,
-	})
+// enable/disable debugging
+func (d *Device) Debug(b bool) {
+	d.debug = b
 }
 
-func (d *Device) reset() {
-	d.rst.Low()
-	time.Sleep(1 * time.Millisecond) // min 20ns
-	d.rst.High()
-	time.Sleep(2 * time.Millisecond) // max 2ms
+func (d *Device) Configure() error {
+	time.Sleep(10 * time.Millisecond)
+	return d.wakeup()
 }
 
-func (d *Device) wakeup() {
-	d.samconfig()
+func (d *Device) wakeup() error {
+	return d.samconfig()
 }
 
 func (d *Device) samconfig() error {
-	buffer := make([]byte, 4)
+	buffer := d.buffer[:4]
 	buffer[0] = COMMAND_SAMCONFIGURATION
 	buffer[1] = 0x01 // normal mode
 	buffer[2] = 0x14 // timeout 50ms * 20 = 1 second
 	buffer[3] = 0x01 // use IRQ PIN!
 
 	if err := d.sendCommandCheckAck(buffer, 100*time.Millisecond); err != nil {
-		fmt.Printf("Error while sending command %s\n", err)
+		return err
 	}
-	buffer = make([]byte, 9)
+	buffer = d.buffer[:9]
 	if err := d.readdata(buffer); err != nil {
+		return err
 	}
 	const offset = 6
 	if buffer[offset] != 0x15 {
-		return fmt.Errorf("Invalid response %d", buffer[offset])
+		return fmt.Errorf("invalid response %d", buffer[offset])
 	}
 	return nil
 }
 
 func (d *Device) sendCommandCheckAck(command []byte, timeout time.Duration) error {
 	// write the command
-	d.writecommand(command)
+	if err := d.writecommand(command); err != nil {
+		return err
+	}
 	if !d.waitready(timeout) {
 		return fmt.Errorf("waitready failed")
 	}
 	d.i2cTuning()
-	if !d.readack() {
+	if !d.isACK() {
 		return fmt.Errorf("readack failed")
 	}
 	d.i2cTuning()
@@ -123,8 +153,8 @@ func (d *Device) sendCommandCheckAck(command []byte, timeout time.Duration) erro
 	return nil
 }
 
-func (d *Device) writecommand(cmd []byte) {
-	packet := make([]byte, 8+len(cmd))
+func (d *Device) writecommand(cmd []byte) error {
+	packet := d.txBuffer[:8+len(cmd)]
 	LEN := byte(len(cmd) + 1)
 	packet[0] = PN532_PREAMBLE
 	packet[1] = PN532_STARTCODE1
@@ -140,13 +170,14 @@ func (d *Device) writecommand(cmd []byte) {
 	packet[6+len(cmd)] = ^(PN532_HOSTTOPN532 + sum) + 1
 	packet[7+len(cmd)] = PN532_POSTAMBLE
 	if err := d.bus.Tx(d.Address, packet, nil); err != nil {
-		fmt.Printf("Error while sending command %s\n", err)
+		return err
 	}
+	return nil
 }
 
 func (d *Device) waitready(timeout time.Duration) bool {
 	const delay = 10 * time.Millisecond
-	timer := 0 * time.Millisecond
+	timer := 1 * time.Millisecond
 	for !d.isReady() {
 		if timeout != 0 {
 			timer += 10 * time.Millisecond
@@ -159,43 +190,38 @@ func (d *Device) waitready(timeout time.Duration) bool {
 	return true
 }
 
-func (d *Device) readack() bool {
-	pn532ack := []byte{
-		0x00, 0x00, 0xFF,
-		0x00, 0xFF, 0x00,
-	} ///< ACK message from PN532
-
-	ackbuff := make([]byte, 6)
-	err := d.readdata(ackbuff)
+func (d *Device) isACK() bool {
+	err := d.readdata(d.ackbuff[:])
 	if err != nil {
-		fmt.Printf("Error received: %s\n", err)
+		if d.debug {
+			fmt.Printf("Error received: %s\n", err)
+		}
 		return false
 	}
-	d.printBuffer("ACK", ackbuff)
-	return bytes.Equal(ackbuff, pn532ack)
+	d.PrintBuffer("ACK", d.ackbuff[:])
+	return bytes.Equal(d.ackbuff[:], d.pn532ack[:])
 }
 
-func (d *Device) printBuffer(name string, buffer []byte) {
-	fmt.Printf("%s buffer: [ ", name)
-	for _, b := range buffer {
-		fmt.Printf("0x%02X ", b)
+func (d *Device) PrintBuffer(name string, buffer []byte) {
+	if d.debug {
+		fmt.Printf("%s buffer: [ ", name)
+		for _, b := range buffer {
+			fmt.Printf("0x%02X ", b)
+		}
+		fmt.Printf("]\n")
 	}
-	fmt.Printf("]\n")
 }
 
 func (d *Device) readdata(buffer []byte) error {
-	rxBuffer := make([]byte, len(buffer)+1)
+	rxBuffer := d.rxBuffer[:len(buffer)+1]
 	d.bus.Tx(d.Address, nil, rxBuffer)
-	for i := 0; i < len(buffer); i++ {
-		buffer[i] = rxBuffer[i+1]
-	}
+	copy(buffer, rxBuffer[1:])
 	return nil
 }
 
 func (d *Device) isReady() bool {
-	rdy := make([]byte, 1)
-	d.bus.Tx(d.Address, nil, rdy)
-	return rdy[0] == PN532_I2C_READY
+	d.bus.Tx(d.Address, nil, d.rdy[:])
+	return d.rdy[0] == PN532_I2C_READY
 }
 
 func (d *Device) i2cTuning() {
@@ -205,42 +231,83 @@ func (d *Device) i2cTuning() {
 
 func (d *Device) FirmwareVersion() (FirmwareVersion, error) {
 	version := FirmwareVersion{}
-	buffer := make([]byte, 1)
+	buffer := d.buffer[:1]
 	buffer[0] = COMMAND_GETFIRMWAREVERSION
 	err := d.sendCommandCheckAck(buffer, 100*time.Millisecond)
 	if err != nil {
 		return version, err
 	}
 
-	buffer = make([]byte, 13)
+	buffer = d.buffer[:13]
 	err = d.readdata(buffer)
 	if err != nil {
 		return version, err
 	}
-	d.printBuffer("Firmware", buffer)
+	d.PrintBuffer("Firmware", buffer)
 
-	expFirmwareVersion := []byte{
-		0x00, 0x00, 0xFF,
-		0x06, 0xFA, 0xD5,
-	}
-
-	if !bytes.Equal(buffer[0:len(expFirmwareVersion)], expFirmwareVersion) {
+	if !bytes.Equal(buffer[0:len(d.firmwareVersion)], d.firmwareVersion[:]) {
 		return version, fmt.Errorf("Invalid response received")
 	}
 
-	var response uint32
-	response = uint32(buffer[7])
-	response <<= 8
-	response |= uint32(buffer[8])
-	response <<= 8
-	response |= uint32(buffer[9])
-	response <<= 8
-	response |= uint32(buffer[10])
-
+	var response uint32 = 0
+	for i := 7; i <= 10; i++ {
+		response <<= 8
+		response |= uint32(buffer[i])
+	}
 	version.IC = uint8((response >> 24) & 0xFF)
 	version.Ver = uint8((response >> 16) & 0xFF)
 	version.Rev = uint8((response >> 8) & 0xFF)
 	version.Support = uint8((response) & 0xFF)
 
 	return version, nil
+}
+
+func (d *Device) ReadPassiveTargetID(cardbaudrate uint8, timeout time.Duration) ([]byte, error) {
+	buffer := d.buffer[:3]
+	buffer[0] = COMMAND_INLISTPASSIVETARGET
+	buffer[1] = 1 // limit this for one card at the moment
+	buffer[2] = cardbaudrate
+
+	if err := d.sendCommandCheckAck(buffer, timeout); err != nil {
+		fmt.Println("Failed sendCommandCheckAck")
+		return []byte{}, err
+	}
+
+	return d.ReadDetectedPassiveTargetID()
+}
+
+func (d *Device) ReadDetectedPassiveTargetID() ([]byte, error) {
+	buffer := d.buffer[:20]
+	if err := d.readdata(buffer); err != nil {
+		return []byte{}, err
+	}
+	/* ISO14443A card response should be in the following format:
+
+	   byte            Description
+	   -------------   ------------------------------------------
+	   b0..6           Frame header and preamble
+	   b7              Tags Found
+	   b8              Tag Number (only one used in this example)
+	   b9..10          SENS_RES
+	   b11             SEL_RES
+	   b12             NFCID Length
+	   b13..NFCIDLen   NFCID
+	*/
+	const b13 = 13
+	if buffer[7] != 1 {
+		return []byte{}, fmt.Errorf("invalid amount of cards detected")
+	}
+	var sense_res uint16 = uint16(buffer[9])
+
+	sense_res <<= 8
+	sense_res |= uint16(buffer[10])
+	nfcIDLen := int(buffer[12])
+	if d.debug {
+		fmt.Printf("NFCID length: %d\n", nfcIDLen)
+		fmt.Printf("ATQA: 0x%02X\n", sense_res)
+		fmt.Printf("SAK: 0x%02X\n", buffer[11])
+	}
+	uid := buffer[b13 : b13+nfcIDLen]
+
+	return uid, nil
 }

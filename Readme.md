@@ -6,4 +6,4 @@ Most of the examples here are tested with an Raspberry Pi Pico Microcontroller.
 
 # LICENSE
 
-I no explicit license given this repository is licensed under the Apache Version 2 license
+I no explicit license given this repository is licensed under the [BSD 3-clause license](LICENSE).
