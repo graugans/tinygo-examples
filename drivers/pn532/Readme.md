@@ -1,6 +1,6 @@
 # PN532 Driver
 
-This is still a work in progress driver. At the moment it only supports I2C. For an example check the [nfc](nfc/) example.
+This is still a work in progress driver. At the moment it only supports I2C. For an example check the [nfc](/nfc/) example.
 
 ## Datasheet and user manual
 
