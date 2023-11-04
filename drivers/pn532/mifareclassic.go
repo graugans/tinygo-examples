@@ -1,7 +1,8 @@
 package pn532
 
 import (
-	"fmt"
+	"encoding/hex"
+	"errors"
 	"time"
 )
 
@@ -50,7 +51,7 @@ func (m *MifareClassic) AuthenticateBlock(uid []byte,
 	buffer[3] = byte(blockNumber)
 	copy(buffer[4:], m.keys[keyNumber])
 	copy(buffer[10:], uid)
-	m.dev.PrintBuffer("Auth Buffer: ", buffer)
+	m.dev.printBuffer("Auth Buffer: ", buffer)
 	if err := m.dev.sendCommandCheckAck(buffer, 100*time.Millisecond); err != nil {
 		return err
 	}
@@ -62,9 +63,10 @@ func (m *MifareClassic) AuthenticateBlock(uid []byte,
 	// for an auth success it should be bytes 5-7: 0xD5 0x41 0x00
 	// Mifare auth error is technically byte 7: 0x14 but anything other and 0x00
 	// is not good
-	m.dev.PrintBuffer("Auth response", buffer)
+	m.dev.printBuffer("Auth response", buffer)
 	if buffer[7] != 0x00 {
-		return fmt.Errorf("Mifare auth error, expected 0x00 got: 0x%x", buffer[7])
+		message := "Mifare auth error, expected 0x00 got: 0x" + hex.EncodeToString(buffer[7:7])
+		return errors.New(message)
 	}
 	return nil
 }
@@ -82,22 +84,20 @@ func (m *MifareClassic) ReadDataBlock(blockNumber uint8) ([]byte, error) {
 	if err := m.dev.readdata(buffer); err != nil {
 		return []byte{}, err
 	}
-	m.dev.PrintBuffer("read response", buffer)
+	m.dev.printBuffer("read response", buffer)
 	if buffer[7] != 0x00 {
-		return []byte{}, fmt.Errorf("Mifare read response, expected 0x00 got: 0x%x", buffer[8])
+		message := "Mifare read response, expected 0x00 got: 0x" + hex.EncodeToString(buffer[8:8])
+		return []byte{}, errors.New(message)
 	}
 	data := make([]byte, 16)
 	copy(data, buffer[8:8+len(data)])
-	m.dev.PrintBuffer("data buffer", data)
+	m.dev.printBuffer("data buffer", data)
 	return data, nil
 }
 
 func (m *MifareClassic) WriteDataBlock(blockNumber uint8, data []byte) error {
 	if len(data) > MifareClassicBlockSize {
-		return fmt.Errorf("The given data exceeds the buffer size %d/%d",
-			len(data),
-			MifareClassicBlockSize,
-		)
+		return errors.New("The given data exceeds the block size")
 	}
 	buffer := m.dev.buffer[:20]
 	buffer[0] = COMMAND_INDATAEXCHANGE
@@ -105,7 +105,7 @@ func (m *MifareClassic) WriteDataBlock(blockNumber uint8, data []byte) error {
 	buffer[2] = MIFARE_CMD_WRITE
 	buffer[3] = blockNumber // Block Number (0..63 for 1K, 0..255 for 4K)
 	copy(buffer[4:], data)
-	m.dev.PrintBuffer("data buffer", data)
+	m.dev.printBuffer("data buffer", data)
 
 	if err := m.dev.sendCommandCheckAck(buffer, 100*time.Millisecond); err != nil {
 		return err
@@ -116,7 +116,7 @@ func (m *MifareClassic) WriteDataBlock(blockNumber uint8, data []byte) error {
 	if err := m.dev.readdata(buffer); err != nil {
 		return err
 	}
-	m.dev.PrintBuffer("write response", buffer)
+	m.dev.printBuffer("write response", buffer)
 	return nil
 }
 

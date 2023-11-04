@@ -10,8 +10,10 @@ package pn532
 
 import (
 	"bytes"
-	"fmt"
+	"encoding/hex"
+	"errors"
 	"machine"
+	"strconv"
 	"time"
 )
 
@@ -24,9 +26,9 @@ type FirmwareVersion struct {
 }
 
 func (ver *FirmwareVersion) String() string {
-	res := fmt.Sprintf("Found Chip PN5%02X\n", ver.IC)
-	res += fmt.Sprintf("Firmware version: %d.%d\n", ver.Ver, ver.Rev)
-	res += fmt.Sprintf("Firmware Support: 0x%02X\n", ver.Support)
+	res := "Found Chip PN5" + hex.EncodeToString([]byte{ver.IC}) + "\n"
+	res += "Firmware version: " + strconv.Itoa(int(ver.Ver)) + "." + strconv.Itoa(int(ver.Rev)) + "\n"
+	res += "Firmware Support: 0x" + hex.EncodeToString([]byte{ver.IC}) + "\n"
 	return res
 }
 
@@ -68,7 +70,7 @@ const (
 // Device wraps an I2C connection to a PN532 device.
 type Device struct {
 	bus             *machine.I2C
-	Address         uint16
+	address         uint16
 	debug           bool
 	buffer          [BUFFSIZE]byte
 	txBuffer        [BUFFSIZE]byte
@@ -86,7 +88,7 @@ type Device struct {
 func NewI2C(bus *machine.I2C) Device {
 	return Device{
 		bus:     bus,
-		Address: Address,
+		address: Address,
 		debug:   false,
 		pn532ack: [...]byte{
 			0x00, 0x00, 0xFF,
@@ -129,7 +131,7 @@ func (d *Device) samconfig() error {
 	}
 	const offset = 6
 	if buffer[offset] != 0x15 {
-		return fmt.Errorf("invalid response %d", buffer[offset])
+		return errors.New("unexpected response during sam configuration")
 	}
 	return nil
 }
@@ -140,15 +142,15 @@ func (d *Device) sendCommandCheckAck(command []byte, timeout time.Duration) erro
 		return err
 	}
 	if !d.waitready(timeout) {
-		return fmt.Errorf("waitready failed")
+		return errors.New("waitready failed")
 	}
 	d.i2cTuning()
 	if !d.isACK() {
-		return fmt.Errorf("readack failed")
+		return errors.New("readack failed")
 	}
 	d.i2cTuning()
 	if !d.waitready(timeout) {
-		return fmt.Errorf("second waitready failed")
+		return errors.New("second waitready failed")
 	}
 	return nil
 }
@@ -169,7 +171,7 @@ func (d *Device) writecommand(cmd []byte) error {
 	}
 	packet[6+len(cmd)] = ^(PN532_HOSTTOPN532 + sum) + 1
 	packet[7+len(cmd)] = PN532_POSTAMBLE
-	if err := d.bus.Tx(d.Address, packet, nil); err != nil {
+	if err := d.bus.Tx(d.address, packet, nil); err != nil {
 		return err
 	}
 	return nil
@@ -193,34 +195,29 @@ func (d *Device) waitready(timeout time.Duration) bool {
 func (d *Device) isACK() bool {
 	err := d.readdata(d.ackbuff[:])
 	if err != nil {
-		if d.debug {
-			fmt.Printf("Error received: %s\n", err)
-		}
 		return false
 	}
-	d.PrintBuffer("ACK", d.ackbuff[:])
+	d.printBuffer("ACK", d.ackbuff[:])
 	return bytes.Equal(d.ackbuff[:], d.pn532ack[:])
 }
 
-func (d *Device) PrintBuffer(name string, buffer []byte) {
+func (d *Device) printBuffer(name string, buffer []byte) {
 	if d.debug {
-		fmt.Printf("%s buffer: [ ", name)
-		for _, b := range buffer {
-			fmt.Printf("0x%02X ", b)
-		}
-		fmt.Printf("]\n")
+		println(name, ":")
+		print(hex.Dump(buffer))
+		println()
 	}
 }
 
 func (d *Device) readdata(buffer []byte) error {
 	rxBuffer := d.rxBuffer[:len(buffer)+1]
-	d.bus.Tx(d.Address, nil, rxBuffer)
+	d.bus.Tx(d.address, nil, rxBuffer)
 	copy(buffer, rxBuffer[1:])
 	return nil
 }
 
 func (d *Device) isReady() bool {
-	d.bus.Tx(d.Address, nil, d.rdy[:])
+	d.bus.Tx(d.address, nil, d.rdy[:])
 	return d.rdy[0] == PN532_I2C_READY
 }
 
@@ -243,10 +240,10 @@ func (d *Device) FirmwareVersion() (FirmwareVersion, error) {
 	if err != nil {
 		return version, err
 	}
-	d.PrintBuffer("Firmware", buffer)
+	d.printBuffer("Firmware", buffer)
 
 	if !bytes.Equal(buffer[0:len(d.firmwareVersion)], d.firmwareVersion[:]) {
-		return version, fmt.Errorf("Invalid response received")
+		return version, errors.New("Invalid response received")
 	}
 
 	var response uint32 = 0
@@ -269,8 +266,7 @@ func (d *Device) ReadPassiveTargetID(cardbaudrate uint8, timeout time.Duration) 
 	buffer[2] = cardbaudrate
 
 	if err := d.sendCommandCheckAck(buffer, timeout); err != nil {
-		fmt.Println("Failed sendCommandCheckAck")
-		return []byte{}, err
+		return []byte{}, errors.Join(errors.New("Failed sendCommandCheckAck"), err)
 	}
 
 	return d.ReadDetectedPassiveTargetID()
@@ -295,18 +291,13 @@ func (d *Device) ReadDetectedPassiveTargetID() ([]byte, error) {
 	*/
 	const b13 = 13
 	if buffer[7] != 1 {
-		return []byte{}, fmt.Errorf("invalid amount of cards detected")
+		return []byte{}, errors.New("invalid amount of cards detected")
 	}
 	var sense_res uint16 = uint16(buffer[9])
 
 	sense_res <<= 8
 	sense_res |= uint16(buffer[10])
 	nfcIDLen := int(buffer[12])
-	if d.debug {
-		fmt.Printf("NFCID length: %d\n", nfcIDLen)
-		fmt.Printf("ATQA: 0x%02X\n", sense_res)
-		fmt.Printf("SAK: 0x%02X\n", buffer[11])
-	}
 	uid := buffer[b13 : b13+nfcIDLen]
 
 	return uid, nil
