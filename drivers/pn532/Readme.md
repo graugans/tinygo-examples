@@ -17,9 +17,11 @@ For implementing the communication the [PN532 User Manual](https://www.nxp.com/d
 ## Reference Hardware
 
 I have tested this driver on a cheap NCF Module V3 board.
-![Elechouse NFC Module V3](doc/images/nfc-module-v3.png)
+![Elechouse NFC Module V3](/doc/images/nfc-module-v3.png)
 
 This board does not provide the `RSTPD_N`, this is why I did not have used the reset logic.
+
+For more details please check the manual [PN532 NFC RFID Module User Guide](https://www.elechouse.com/elechouse/images/product/PN532_module_V3/PN532_%20Manual_V3.pdf)
 
 ## License
 
